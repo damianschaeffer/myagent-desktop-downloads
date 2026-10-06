@@ -1,0 +1,48 @@
+name: Assemble release assets from parts
+
+# Used when files are too large to upload reliably from a flaky connection: the parts are uploaded as release assets
+# (<name>.part-000, ...), this job joins them, verifies SHA-256 against MANIFEST.txt, replaces the real assets, then
+# deletes the parts and the manifest.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.1.0-alpha.0
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download parts
+        run: |
+          mkdir work && cd work
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.part-*' --pattern MANIFEST.txt
+          ls -la
+      - name: Join and verify
+        run: |
+          cd work
+          while read -r sha name; do
+            [ -n "$name" ] || continue
+            cat "$name".part-* > "$name"
+            echo "$sha  $name" | sha256sum -c -
+          done < MANIFEST.txt
+      - name: Replace public assets
+        run: |
+          cd work
+          while read -r sha name; do
+            [ -n "$name" ] || continue
+            gh release upload "$TAG" "$name" --repo "$GITHUB_REPOSITORY" --clobber
+          done < MANIFEST.txt
+      - name: Remove parts
+        run: |
+          for a in $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -E '\.part-[0-9]+$|^MANIFEST\.txt$'); do
+            gh release delete-asset "$TAG" "$a" --repo "$GITHUB_REPOSITORY" --yes
+          done
